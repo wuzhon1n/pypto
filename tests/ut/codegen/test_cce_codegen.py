@@ -89,7 +89,7 @@ class TestCCECodegenBasics:
 
 
 def test_manual_fillpad_codegen_uses_destination_pad_value():
-    """CCE manual.fillpad should lower to TFILLPAD with dst TilePad encoded in the tile type."""
+    """CCE manual.fillpad should bind a null-pad alias source before TFILLPAD."""
     backend.reset_for_testing()
     backend.set_backend_type(BackendType.CCE)
 
@@ -108,6 +108,7 @@ def test_manual_fillpad_codegen_uses_destination_pad_value():
                 dtype=pl.FP32,
                 target_memory=pl.MemorySpace.Vec,
                 valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
             )
             dst_type = plm.TileType(
                 shape=[16, 16],
@@ -132,6 +133,53 @@ def test_manual_fillpad_codegen_uses_destination_pad_value():
     assert "TFILLPAD(" in code
     assert "PadValue::Zero" in code
     assert "Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Zero>" in code
+    assert "using __manual_fillpad_src_alias_type_" in code
+    assert ".GetValidRow(), src.GetValidCol()" in code
+    assert "TASSIGN(__manual_fillpad_src_alias_" in code
+    assert "TMOV(__manual_fillpad_src_alias_" not in code
+    assert "TFILLPAD(dst, __manual_fillpad_src_alias_" in code
+
+
+def test_manual_fillpad_inplace_codegen_uses_null_pad_temp_and_updates_valid_shape():
+    """CCE fillpad(src, src) should lower to TFILLPAD_INPLACE with a null-pad alias source."""
+    backend.reset_for_testing()
+    backend.set_backend_type(BackendType.CCE)
+
+    @pl.program
+    class ManualFillPadInplaceCCEProgram:
+        @pl.function
+        def fillpad_same_tile(
+            self,
+            input: pl.Tensor[[16, 16], pl.FP32],
+            output: pl.Tensor[[16, 16], pl.FP32],
+            rows_arg: pl.Scalar[pl.INDEX],
+            cols_arg: pl.Scalar[pl.INDEX],
+        ) -> pl.Tensor[[16, 16], pl.FP32]:
+            tile_type = plm.TileType(
+                shape=[16, 16],
+                dtype=pl.FP32,
+                target_memory=pl.MemorySpace.Vec,
+                valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
+            )
+            src = plm.make_tile(tile_type, addr=0x0000, size=1024)
+            plm.set_validshape(src, rows_arg, cols_arg)
+            plm.fillpad(src, src)
+            return output
+
+    pm = PassManager.get_strategy()
+    optimized_program = pm.run_passes(ManualFillPadInplaceCCEProgram)
+
+    generator = codegen.CCECodegen()
+    files = generator.generate(optimized_program)
+    kernel_name = list(optimized_program.functions.values())[0].name
+    code = files["kernels/aiv/" + kernel_name + ".cpp"]
+
+    assert "using __manual_fillpad_src_alias_type_" in code
+    assert "TASSIGN(__manual_fillpad_src_alias_" in code
+    assert "TMOV(__manual_fillpad_src_alias_" not in code
+    assert "TFILLPAD_INPLACE(src, __manual_fillpad_src_alias_" in code
+    assert "src.SetValidShape(16, 16);" in code
 
 
 def test_manual_fillpad_expand_codegen_uses_destination_pad_value():
@@ -154,6 +202,7 @@ def test_manual_fillpad_expand_codegen_uses_destination_pad_value():
                 dtype=pl.FP32,
                 target_memory=pl.MemorySpace.Vec,
                 valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
             )
             dst_type = plm.TileType(
                 shape=[16, 32],

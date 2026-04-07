@@ -1549,6 +1549,10 @@ class ASTParser:
             should_leak = not bool(then_yield_vars)
 
             # Parse then branch (yield types captured via _current_yield_types)
+            # Save tuple-select cache so entries added in the then-branch
+            # don't leak into the else-branch (the phi vars are scoped to
+            # the branch where they were emitted).
+            saved_tuple_cache = dict(self._tuple_select_cache)
             self.scope_manager.enter_scope("if")
             for then_stmt in stmt.body:
                 self.parse_statement(then_stmt)
@@ -1564,6 +1568,11 @@ class ASTParser:
                     saved = getattr(self, "_pre_if_pending_backward_waits", None)
                     if saved is not None:
                         self._pending_backward_waits = copy.deepcopy(saved)
+
+                # Restore tuple-select cache to pre-then state so the
+                # else branch generates its own phi vars instead of
+                # referencing ones defined only inside the then branch.
+                self._tuple_select_cache = saved_tuple_cache
 
                 if_builder.else_()
                 self.scope_manager.enter_scope("else")
@@ -1585,6 +1594,10 @@ class ASTParser:
             # Restore previous yield trackers
             self._current_yield_vars = prev_yield_tracker
             self._current_yield_types = prev_yield_types
+
+        # Restore tuple-select cache: entries added inside either branch
+        # are not valid in the outer scope.
+        self._tuple_select_cache = saved_tuple_cache
 
         # Auto-sync: merge branch states conservatively
         if self.sync_tracker is not None:

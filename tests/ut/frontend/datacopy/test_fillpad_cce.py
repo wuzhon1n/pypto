@@ -25,13 +25,14 @@ import pypto.language.op.manual as plm
 @fe.kernel
 def fillpad_dynamic_cce_kernel(
     x: pl.Tensor[[8, 8], pl.INT32],
-    z: pl.Tensor[[8, 8], pl.INT32],
-) -> pl.Tensor[[8, 8], pl.INT32]:
+    z: pl.Tensor[[16, 8], pl.INT32],
+) -> pl.Tensor[[16, 8], pl.INT32]:
     src_type = plm.TileType(
         shape=[8, 8],
         dtype=pl.INT32,
         target_memory=pl.MemorySpace.Vec,
         valid_shape=[-1, -1],
+        pad=plm.TilePad.zero,
     )
     dst_type = plm.TileType(
         shape=[8, 8],
@@ -51,12 +52,16 @@ def fillpad_dynamic_cce_kernel(
         plm.dump_tile(src)
 
         plm.fillpad(dst, src)
-
         plm.dump_tile(dst)
+        plm.fillpad(src, src)
+        plm.dump_tile(src)
 
         pl.system.sync_src(set_pipe=pl.PipeType.V, wait_pipe=pl.PipeType.MTE3, event_id=1)
         pl.system.sync_dst(set_pipe=pl.PipeType.V, wait_pipe=pl.PipeType.MTE3, event_id=1)
         plm.store(z, dst, [0, 0])
+        pl.system.sync_src(set_pipe=pl.PipeType.V, wait_pipe=pl.PipeType.MTE3, event_id=2)
+        pl.system.sync_dst(set_pipe=pl.PipeType.V, wait_pipe=pl.PipeType.MTE3, event_id=2)
+        plm.store(z, src, [8, 0])
         pl.system.bar_all()
 
     return z
@@ -72,7 +77,7 @@ def test_fillpad_dynamic_cce():
 
     x = torch.full((8, 8), -99, device=device, dtype=torch.int32)
     x[:5, :7] = torch.arange(35, device=device, dtype=torch.int32).reshape(5, 7)
-    z = torch.empty((8, 8), device=device, dtype=torch.int32)
+    z = torch.empty((16, 8), device=device, dtype=torch.int32)
 
     fe.launch(None, 1, compiled_lib, x, z)
     torch.npu.synchronize()
@@ -87,7 +92,8 @@ def test_fillpad_dynamic_cce():
     print(z_ref.shape, z_ref.dtype)
     print(z_ref)
 
-    torch.testing.assert_close(z, z_ref)
+    torch.testing.assert_close(z[:8, :], z_ref)
+    torch.testing.assert_close(z[8:, :], z_ref)
     print("result equal!")
 
 

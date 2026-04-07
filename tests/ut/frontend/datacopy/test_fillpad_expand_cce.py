@@ -32,6 +32,7 @@ def fillpad_expand_dynamic_cce_kernel(
         dtype=pl.INT32,
         target_memory=pl.MemorySpace.Vec,
         valid_shape=[-1, -1],
+        pad=plm.TilePad.zero,
     )
     dst_type = plm.TileType(
         shape=[8, 16],

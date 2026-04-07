@@ -789,7 +789,7 @@ def test_pto_codegen_dump_tile_dynamic_valid_shape_lowering():
 
 
 def test_pto_codegen_manual_fillpad_updates_pad_and_valid_shape():
-    """plm.fillpad should lower to pto.tfillpad using the destination tile's type metadata."""
+    """plm.fillpad should lower through a null-pad alias view without changing the original src type."""
     backend.reset_for_testing()
     backend.set_backend_type(BackendType.PTO)
 
@@ -807,6 +807,7 @@ def test_pto_codegen_manual_fillpad_updates_pad_and_valid_shape():
                 dtype=pl.FP32,
                 target_memory=pl.MemorySpace.Vec,
                 valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
             )
             dst_type = plm.TileType(
                 shape=[16, 16],
@@ -827,14 +828,19 @@ def test_pto_codegen_manual_fillpad_updates_pad_and_valid_shape():
     codegen_obj = PTOCodegen()
     mlir_code = _get_mlir_code(codegen_obj.generate(transformed_program))
 
-    assert "pto.set_validshape" in mlir_code
+    assert mlir_code.count("pto.alloc_tile") == 3
+    assert mlir_code.count("pto.set_validshape") == 1
+    assert "pto.alloc_tile addr = %addr0 valid_row = " in mlir_code
+    assert " valid_col = " in mlir_code
+    assert "pto.tmov ins(" not in mlir_code
     assert "pto.tfillpad ins(" in mlir_code
+    assert "pad=0" in mlir_code
     assert "pad=1" in mlir_code
-    assert "v_row=16, v_col=16" in mlir_code
+    assert "v_row=?, v_col=?" in mlir_code
 
 
 def test_pto_codegen_manual_fillpad_expand_uses_expand_op():
-    """plm.fillpad_expand should lower to pto.tfillpad_expand using the destination tile metadata."""
+    """plm.fillpad_expand should lower through a null-pad alias view."""
     backend.reset_for_testing()
     backend.set_backend_type(BackendType.PTO)
 
@@ -852,6 +858,7 @@ def test_pto_codegen_manual_fillpad_expand_uses_expand_op():
                 dtype=pl.FP32,
                 target_memory=pl.MemorySpace.Vec,
                 valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
             )
             dst_type = plm.TileType(
                 shape=[16, 32],
@@ -872,11 +879,50 @@ def test_pto_codegen_manual_fillpad_expand_uses_expand_op():
     codegen_obj = PTOCodegen()
     mlir_code = _get_mlir_code(codegen_obj.generate(transformed_program))
 
-    assert "pto.set_validshape" in mlir_code
+    assert mlir_code.count("pto.alloc_tile") == 3
+    assert mlir_code.count("pto.set_validshape") == 1
+    assert "pto.alloc_tile addr = %addr0 valid_row = " in mlir_code
+    assert " valid_col = " in mlir_code
+    assert "pto.tmov ins(" not in mlir_code
     assert "pto.tfillpad_expand ins(" in mlir_code
+    assert "pad=0" in mlir_code
     assert "pad=1" in mlir_code
     assert "rows=16, cols=32" in mlir_code
     assert "v_row=16, v_col=32" in mlir_code
+
+
+def test_pto_codegen_manual_fillpad_rejects_same_tile_inplace():
+    """PTO backend should reject fillpad(src, src) until same-tile lowering is supported."""
+    backend.reset_for_testing()
+    backend.set_backend_type(BackendType.PTO)
+
+    @pl.program
+    class ManualFillPadInplaceProgram:
+        @pl.function
+        def fillpad_same_tile(
+            self,
+            rows: pl.Scalar[pl.INDEX],
+            cols: pl.Scalar[pl.INDEX],
+            output: pl.Tensor[[16, 16], pl.FP32],
+        ):
+            tile_type = plm.TileType(
+                shape=[16, 16],
+                dtype=pl.FP32,
+                target_memory=pl.MemorySpace.Vec,
+                valid_shape=[-1, -1],
+                pad=plm.TilePad.zero,
+            )
+            src = plm.make_tile(tile_type, addr=0x0000, size=1024)
+            plm.set_validshape(src, rows, cols)
+            plm.fillpad(src, src)
+            return output
+
+    pm = PassManager.get_strategy(OptimizationStrategy.PTOAS)
+    transformed_program = pm.run_passes(ManualFillPadInplaceProgram)
+
+    codegen_obj = PTOCodegen()
+    with pytest.raises(ValueError, match="fillpad\\(src, src\\)"):
+        codegen_obj.generate(transformed_program)
 
 
 def test_manual_fillpad_rejects_invalid_pad_modes():

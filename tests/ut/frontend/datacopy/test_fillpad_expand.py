@@ -27,6 +27,7 @@ def fillpad_expand_dynamic_kernel(
         dtype=pl.INT32,
         target_memory=pl.MemorySpace.Vec,
         valid_shape=[-1, -1],
+        pad=plm.TilePad.zero,
     )
     dst_type = plm.TileType(
         shape=[8, 16],
@@ -43,8 +44,6 @@ def fillpad_expand_dynamic_kernel(
         pl.system.sync_src(set_pipe=pl.PipeType.MTE2, wait_pipe=pl.PipeType.V, event_id=0)
         pl.system.sync_dst(set_pipe=pl.PipeType.MTE2, wait_pipe=pl.PipeType.V, event_id=0)
 
-        # The source tile's invalid region is unspecified after TLOAD when pad=null.
-        # This dump is only for state observation, not for judging pad correctness.
         plm.dump_tile(src)
 
         plm.fillpad_expand(dst, src)

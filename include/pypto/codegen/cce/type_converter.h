@@ -45,6 +45,15 @@ class TypeConverter {
   [[nodiscard]] std::string ConvertTileType(const ir::TileTypePtr& tile_type, int64_t rows,
                                             int64_t cols) const;
 
+  /**
+   * @brief Convert TileType to pto-isa TileType string with an overridden pad mode
+   *
+   * Useful when a temporary tile should preserve the source layout/shape but
+   * expose a different compile-time PadValue.
+   */
+  [[nodiscard]] std::string ConvertTileTypeWithPadOverride(
+      const ir::TileTypePtr& tile_type, int64_t rows, int64_t cols, ir::TilePad pad) const;
+
 
   /**
    * @brief Convert MemorySpace to pto-isa TileType string

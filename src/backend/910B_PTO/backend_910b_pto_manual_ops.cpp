@@ -33,6 +33,7 @@
 #include "pypto/backend/common/backend.h"
 #include "pypto/codegen/codegen_base.h"
 #include "pypto/codegen/pto/pto_codegen.h"
+#include "pypto/core/error.h"
 #include "pypto/core/logging.h"
 #include "pypto/ir/expr.h"
 #include "pypto/ir/kind_traits.h"
@@ -374,12 +375,87 @@ static std::string MakeManualUnaryPTO(const std::string& pto_op, const CallPtr& 
   return "";
 }
 
+static bool NeedsNullPadSourceAliasPTO(const std::shared_ptr<const ir::TileType>& tile_type) {
+  return tile_type && tile_type->tile_view_.has_value() &&
+         tile_type->tile_view_->pad != ir::TilePad::null;
+}
+
+static std::string GetTileTypeAnnotationOrFallbackPTO(
+    codegen::PTOCodegen& codegen, const ir::ExprPtr& expr,
+    const std::shared_ptr<const ir::TileType>& tile_type) {
+  std::string type = codegen.GetExprTypeAnnotation(expr);
+  if (type.empty() && tile_type) {
+    type = codegen.GetTileBufTypeStringFromTileType(tile_type);
+  }
+  return type;
+}
+
+static std::pair<std::string, std::string> BuildNullPadSourceAliasPTO(
+    codegen::PTOCodegen& codegen, const std::shared_ptr<const ir::TileType>& src_tile_type,
+    const std::string& src) {
+  std::string temp_type =
+      codegen.GetTileBufTypeStringWithPadOverride(src_tile_type, ir::TilePad::null);
+  std::string temp = codegen.NewTemp();
+  std::string alloc_addr = codegen.GetTileAddrSSA(src);
+  if (alloc_addr.empty()) {
+    alloc_addr = codegen.GetAddrConstant(0);
+  }
+  if (codegen::PTOCodegen::IsDynamicTile(src_tile_type)) {
+    auto [valid_row, valid_col] = codegen.GetTileValidShape(src);
+    std::ostringstream alloc_oss;
+    alloc_oss << temp << " = pto.alloc_tile addr = " << alloc_addr
+              << " valid_row = " << valid_row
+              << " valid_col = " << valid_col << " : " << temp_type;
+    codegen.Emit(alloc_oss.str());
+    codegen.UpdateTileValidShape(temp, valid_row, valid_col);
+  } else {
+    codegen.Emit(temp + " = pto.alloc_tile addr = " + alloc_addr + " : " + temp_type);
+  }
+
+  return {temp, temp_type};
+}
+
+static std::string MakeManualFillPadLikePTO(const std::string& pto_op, const CallPtr& op,
+                                            codegen::CodegenBase& cb, bool allow_same_tile) {
+  auto& codegen = dynamic_cast<codegen::PTOCodegen&>(cb);
+  CHECK(op->args_.size() == 2) << pto_op << ": expected 2 args (src, out), got " << op->args_.size();
+
+  auto src_tile_type = As<ir::TileType>(op->args_[0]->GetType());
+  auto dst_tile_type = As<ir::TileType>(op->args_[1]->GetType());
+  CHECK(src_tile_type) << pto_op << ": src must be a TileType";
+  CHECK(dst_tile_type) << pto_op << ": out must be a TileType";
+
+  std::string src = codegen.GetExprAsCode(op->args_[0]);
+  std::string dst = codegen.GetExprAsCode(op->args_[1]);
+  if (!allow_same_tile && src == dst) {
+    throw pypto::ValueError("manual.fillpad: PTO backend does not yet support fillpad(src, src)");
+  }
+
+  std::string src_type = GetTileTypeAnnotationOrFallbackPTO(codegen, op->args_[0], src_tile_type);
+  std::string dst_type = GetTileTypeAnnotationOrFallbackPTO(codegen, op->args_[1], dst_tile_type);
+
+  if (NeedsNullPadSourceAliasPTO(src_tile_type) && src != dst) {
+    auto temp_operand = BuildNullPadSourceAliasPTO(codegen, src_tile_type, src);
+    src = temp_operand.first;
+    src_type = temp_operand.second;
+  }
+
+  std::ostringstream oss;
+  oss << pto_op << " ins(" << src;
+  if (!src_type.empty()) oss << " : " << src_type;
+  oss << ") outs(" << dst;
+  if (!dst_type.empty()) oss << " : " << dst_type;
+  oss << ")";
+  codegen.Emit(oss.str());
+  return "";
+}
+
 static std::string MakeManualFillPadPTO(const CallPtr& op, codegen::CodegenBase& cb) {
-  return MakeManualUnaryPTO("pto.tfillpad", op, cb);
+  return MakeManualFillPadLikePTO("pto.tfillpad", op, cb, false);
 }
 
 static std::string MakeManualFillPadExpandPTO(const CallPtr& op, codegen::CodegenBase& cb) {
-  return MakeManualUnaryPTO("pto.tfillpad_expand", op, cb);
+  return MakeManualFillPadLikePTO("pto.tfillpad_expand", op, cb, true);
 }
 
 // Binary: (lhs, rhs, out)

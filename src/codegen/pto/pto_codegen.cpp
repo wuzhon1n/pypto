@@ -839,6 +839,8 @@ std::string PTOCodegen::GetTensorPtr(const VarPtr& tensor_param) {
 
 std::string PTOCodegen::GetIndexConstant(int64_t val) { return GetOrEmitIndexConstant(val); }
 
+std::string PTOCodegen::GetAddrConstant(int64_t value) { return GetOrEmitI64Constant(value); }
+
 std::string PTOCodegen::GetOrEmitFloatConstant(double value, const std::string& mlir_type) {
   if (emitted_float_constants_.find(value) == emitted_float_constants_.end()) {
     std::string name = "%cst";
@@ -1004,6 +1006,32 @@ std::string PTOCodegen::GetTileBufTypeStringFromTileType(
   ir::CompactMode compact = ir::CompactMode::null;
 
   ExtractTileTypeInfo(*tile_type, *this, dtype_str, rows, cols, blayout, slayout, fractal, pad,
+                      v_row, v_col, v_row_dynamic, v_col_dynamic, compact);
+
+  return FormatTileBufTypeString(loc, dtype_str, rows, cols, blayout, slayout, fractal, pad, v_row, v_col,
+                                 v_row_dynamic, v_col_dynamic, compact);
+}
+
+std::string PTOCodegen::GetTileBufTypeStringWithPadOverride(
+    const std::shared_ptr<const ir::TileType>& tile_type, ir::TilePad pad) const {
+  INTERNAL_CHECK(tile_type) << "Internal error: tile_type must not be null";
+  INTERNAL_CHECK(tile_type->memref_.has_value()) << "Internal error: tile_type must have a memref";
+
+  std::string loc = MemorySpaceToMLIR(tile_type->memref_.value()->memory_space_);
+  std::string dtype_str = "f32";
+  int64_t rows = 32;
+  int64_t cols = 32;
+  ir::TileLayout blayout = ir::TileLayout::row_major;
+  ir::TileLayout slayout = ir::TileLayout::none_box;
+  uint64_t fractal = 512;
+  ir::TilePad original_pad = ir::TilePad::null;
+  int64_t v_row = 32;
+  int64_t v_col = 32;
+  bool v_row_dynamic = false;
+  bool v_col_dynamic = false;
+  ir::CompactMode compact = ir::CompactMode::null;
+
+  ExtractTileTypeInfo(*tile_type, *this, dtype_str, rows, cols, blayout, slayout, fractal, original_pad,
                       v_row, v_col, v_row_dynamic, v_col_dynamic, compact);
 
   return FormatTileBufTypeString(loc, dtype_str, rows, cols, blayout, slayout, fractal, pad, v_row, v_col,

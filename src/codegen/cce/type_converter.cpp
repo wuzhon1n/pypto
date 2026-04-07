@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,14 +45,14 @@ std::string ConvertTilePadToPTOValue(ir::TilePad pad) {
   }
 }
 
-}  // namespace
-
-std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int64_t rows,
-                                           int64_t cols) const {
+std::string ConvertTileTypeImpl(const ir::TileTypePtr& tile_type, int64_t rows, int64_t cols,
+                                const std::optional<ir::TilePad>& pad_override,
+                                const TypeConverter& type_converter) {
   std::ostringstream type_alias;
+  const auto get_pad_value = [&](ir::TilePad original_pad) {
+    return ConvertTilePadToPTOValue(pad_override.value_or(original_pad));
+  };
   if (!tile_type->memref_.has_value()) {
-    // No memref: IfStmt return variable or intermediate tile.
-    // Still generate proper Tile type using tile_view if available.
     std::string tile_type_str = "TileType::Vec";
     std::string BLayout = "RowMajor";
     std::string SLayout = "NoneBox";
@@ -62,15 +63,16 @@ std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int
     }
     if (tile_type->tile_view_.has_value()) {
       const auto& tv = tile_type->tile_view_.value();
-      BLayout = ConvertTileLayout(tv.blayout);
-      SLayout = ConvertTileLayout(tv.slayout);
+      BLayout = type_converter.ConvertTileLayout(tv.blayout);
+      SLayout = type_converter.ConvertTileLayout(tv.slayout);
       fractal = std::to_string(tv.fractal);
-      pad_value = ConvertTilePadToPTOValue(tv.pad);
-      // Infer TileType from tile_view layout
+      pad_value = get_pad_value(tv.pad);
       using TL = ir::TileLayout;
       if (tv.blayout == TL::col_major && tv.slayout == TL::row_major) tile_type_str = "TileType::Mat";
       else if (tv.blayout == TL::row_major && tv.slayout == TL::row_major) tile_type_str = "TileType::Left";
       else if (tv.blayout == TL::row_major && tv.slayout == TL::col_major) tile_type_str = "TileType::Right";
+    } else if (pad_override.has_value()) {
+      pad_value = get_pad_value(ir::TilePad::null);
     }
     type_alias << "Tile<" << tile_type_str << ", " << tile_type->dtype_.ToCTypeString() << ", " << rows
                << ", " << cols << ", BLayout::" << BLayout << ", -1, -1, SLayout::" << SLayout << ", "
@@ -81,10 +83,9 @@ std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int
     type_alias << ">";
     return type_alias.str();
   }
-  ir::MemorySpace space = (*tile_type->memref_)->memory_space_;  // NOLINT(bugprone-unchecked-optional-access)
-  std::string tile_type_str = ConvertMemorySpaceToTileType(space);
 
-  // TODO(YunjiQin): BLayout and SLayout should be determined by the tile format
+  ir::MemorySpace space = (*tile_type->memref_)->memory_space_;  // NOLINT(bugprone-unchecked-optional-access)
+  std::string tile_type_str = type_converter.ConvertMemorySpaceToTileType(space);
   std::string BLayout = "RowMajor";
   std::string SLayout = "NoneBox";
   std::string fractal = "512";
@@ -94,10 +95,12 @@ std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int
     BLayout = "ColMajor";
   } else if (tile_type->tile_view_.has_value()) {
     const auto& tv = tile_type->tile_view_.value();
-    BLayout = ConvertTileLayout(tv.blayout);
-    SLayout = ConvertTileLayout(tv.slayout);
+    BLayout = type_converter.ConvertTileLayout(tv.blayout);
+    SLayout = type_converter.ConvertTileLayout(tv.slayout);
     fractal = std::to_string(tv.fractal);
-    pad_value = ConvertTilePadToPTOValue(tv.pad);
+    pad_value = get_pad_value(tv.pad);
+  } else if (pad_override.has_value()) {
+    pad_value = get_pad_value(ir::TilePad::null);
   }
   type_alias << "Tile<" << tile_type_str << ", " << tile_type->dtype_.ToCTypeString() << ", " << rows << ", "
              << cols << ", BLayout::" << BLayout << ", -1, -1, SLayout::" << SLayout << ", " << fractal;
@@ -107,6 +110,18 @@ std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int
   type_alias << ">";
 
   return type_alias.str();
+}
+
+}  // namespace
+
+std::string TypeConverter::ConvertTileType(const ir::TileTypePtr& tile_type, int64_t rows,
+                                           int64_t cols) const {
+  return ConvertTileTypeImpl(tile_type, rows, cols, std::nullopt, *this);
+}
+
+std::string TypeConverter::ConvertTileTypeWithPadOverride(
+    const ir::TileTypePtr& tile_type, int64_t rows, int64_t cols, ir::TilePad pad) const {
+  return ConvertTileTypeImpl(tile_type, rows, cols, pad, *this);
 }
 
 std::string TypeConverter::ConvertMemorySpaceToTileType(ir::MemorySpace space) const {

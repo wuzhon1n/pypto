@@ -350,9 +350,84 @@ static std::string MakeManualExpandsCodegenCCE(const ir::CallPtr& op, codegen::C
   return "";
 }
 
+static bool NeedsNullPadSourceAliasCCE(const ir::TileTypePtr& tile_type) {
+  return tile_type && tile_type->tile_view_.has_value() &&
+         tile_type->tile_view_->pad != ir::TilePad::null;
+}
+
+static std::pair<int64_t, int64_t> GetTileRowsCols(const ir::TileTypePtr& tile_type) {
+  CHECK(tile_type) << "tile_type must not be null";
+  CHECK(tile_type->shape_.size() >= 2) << "fillpad tile must be rank-2";
+  auto row = ir::As<ir::ConstInt>(tile_type->shape_[0]);
+  auto col = ir::As<ir::ConstInt>(tile_type->shape_[1]);
+  CHECK(row && col) << "fillpad tile must have static rows/cols";
+  return {row->value_, col->value_};
+}
+
+static bool IsDynamicValidShapeTile(const ir::TileTypePtr& tile_type) {
+  if (!tile_type || !tile_type->tile_view_.has_value()) {
+    return false;
+  }
+  const auto& valid_shape = tile_type->tile_view_->valid_shape;
+  if (valid_shape.size() < 2) {
+    return false;
+  }
+  auto is_dynamic_dim = [](const ir::ExprPtr& expr) {
+    auto dim = ir::As<ir::ConstInt>(expr);
+    return !dim || dim->value_ < 0;
+  };
+  return is_dynamic_dim(valid_shape[0]) || is_dynamic_dim(valid_shape[1]);
+}
+
+static std::string BuildNullPadSourceAliasCCE(codegen::CCECodegen& codegen,
+                                              const ir::TileTypePtr& src_tile_type,
+                                              const std::string& src_name) {
+  static size_t alias_counter = 0;
+  size_t id = alias_counter++;
+
+  auto [rows, cols] = GetTileRowsCols(src_tile_type);
+  std::string alias_type = codegen.GetTypeConverter().ConvertTileTypeWithPadOverride(
+      src_tile_type, rows, cols, ir::TilePad::null);
+  std::string alias_type_name = "__manual_fillpad_src_alias_type_" + std::to_string(id);
+  std::string alias_name = "__manual_fillpad_src_alias_" + std::to_string(id);
+  std::string src_addr = codegen.GetTileAddress(src_name);
+
+  codegen.Emit("using " + alias_type_name + " = " + alias_type + ";");
+  codegen.Emit(alias_type_name + " " + alias_name + "(" + src_name + ".GetValidRow(), " + src_name +
+               ".GetValidCol());");
+  codegen.Emit("TASSIGN(" + alias_name + ", " + src_addr + ");");
+  return alias_name;
+}
+
 // manual.fillpad — args = [src, dst]
 static std::string MakeManualFillpadCodegenCCE(const ir::CallPtr& op, codegen::CodegenBase& codegen_base) {
-  return MakeManualUnaryCodegenCCE("TFILLPAD", op, codegen_base);
+  auto& codegen = dynamic_cast<codegen::CCECodegen&>(codegen_base);
+  CHECK(op->args_.size() == 2) << "TFILLPAD: expected 2 args (src, dst), got " << op->args_.size();
+
+  std::string src = codegen.GetExprAsCode(op->args_[0]);
+  std::string dst = codegen.GetExprAsCode(op->args_[1]);
+  auto src_tile_type = std::dynamic_pointer_cast<const ir::TileType>(op->args_[0]->GetType());
+  auto dst_tile_type = std::dynamic_pointer_cast<const ir::TileType>(op->args_[1]->GetType());
+
+  if (src == dst) {
+    std::string inplace_src = src;
+    if (NeedsNullPadSourceAliasCCE(src_tile_type)) {
+      inplace_src = BuildNullPadSourceAliasCCE(codegen, src_tile_type, src);
+    }
+    codegen.Emit("TFILLPAD_INPLACE(" + dst + ", " + inplace_src + ");");
+    if (IsDynamicValidShapeTile(dst_tile_type)) {
+      auto [rows, cols] = GetTileRowsCols(dst_tile_type);
+      codegen.Emit(dst + ".SetValidShape(" + std::to_string(rows) + ", " + std::to_string(cols) + ");");
+    }
+    return "";
+  }
+
+  if (NeedsNullPadSourceAliasCCE(src_tile_type)) {
+    src = BuildNullPadSourceAliasCCE(codegen, src_tile_type, src);
+  }
+
+  codegen.Emit("TFILLPAD(" + dst + ", " + src + ");");
+  return "";
 }
 
 // manual.fillpad_expand — args = [src, dst]

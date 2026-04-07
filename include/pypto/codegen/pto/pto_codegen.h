@@ -107,6 +107,11 @@ class PTOCodegen : public CodegenBase {
   std::string GetIndexConstant(int64_t val);
 
   /**
+   * @brief Get or emit an i64 constant SSA for PTO addr operands.
+   */
+  std::string GetAddrConstant(int64_t value);
+
+  /**
    * @brief Register a variable name to an MLIR SSA name
    *
    * @param var_name IR variable name (e.g., "M")
@@ -163,6 +168,12 @@ class PTOCodegen : public CodegenBase {
    * (e.g., reshape input/output).
    */
   std::string GetTileBufTypeStringFromTileType(const std::shared_ptr<const ir::TileType>& tile_type) const;
+
+  /**
+   * @brief Get tile_buf type string directly from a TileType, overriding pad.
+   */
+  std::string GetTileBufTypeStringWithPadOverride(
+      const std::shared_ptr<const ir::TileType>& tile_type, ir::TilePad pad) const;
 
   /**
    * @brief Allocate a new tile buffer for codegen (emitted at function scope)
